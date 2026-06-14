@@ -1,0 +1,6 @@
+/hdhrstream
+/mockhdhr
+*.test
+
+# Local Claude Code settings
+/.claude/

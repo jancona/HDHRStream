@@ -1,0 +1,26 @@
+[Unit]
+Description=HDHRStream — HDHomeRun remote HLS gateway
+Documentation=https://github.com/jancona/HDHRStream
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/hdhrstream.env
+ExecStart=/opt/hdhrstream/hdhrstream
+Restart=on-failure
+RestartSec=3
+
+# HLS scratch lives on tmpfs at /run/hdhrstream, created and cleaned up by systemd.
+RuntimeDirectory=hdhrstream
+Environment=HDHR_WORKDIR=%t/hdhrstream
+
+# Run as a transient unprivileged user with a locked-down filesystem view.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
