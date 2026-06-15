@@ -125,11 +125,6 @@ func (s *srv) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := s.profile(r)
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	base := scheme + "://" + r.Host
 
 	var favs, others []hdhr.Channel
 	for _, c := range chans {
@@ -146,8 +141,11 @@ func (s *srv) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	write := func(c hdhr.Channel, group string) {
-		streamURL := fmt.Sprintf("%s/stream/%s/index.m3u8?profile=%s",
-			base, url.PathEscape(c.GuideNumber), url.QueryEscape(profile))
+		// Relative URL so it inherits whatever path the playlist is served under
+		// (e.g. a secret /s/TOKEN/ prefix behind a reverse proxy); HLS resolves
+		// the per-channel and segment URLs relative to this in turn.
+		streamURL := fmt.Sprintf("stream/%s/index.m3u8?profile=%s",
+			url.PathEscape(c.GuideNumber), url.QueryEscape(profile))
 		fmt.Fprintf(&b, "#EXTINF:-1 tvg-chno=%q tvg-name=%q group-title=%q,%s %s\n%s\n",
 			c.GuideNumber, c.GuideName, group, c.GuideNumber, c.GuideName, streamURL)
 	}

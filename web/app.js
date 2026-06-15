@@ -120,7 +120,7 @@ function stopWatchdog() {
 
 async function loadConfig() {
   try {
-    const cfg = await fetchJSON('/api/config');
+    const cfg = await fetchJSON('api/config');
     DEBUG = !!cfg.debug;
     els.profile.innerHTML = '';
     for (const p of cfg.profiles) {
@@ -138,7 +138,7 @@ async function loadConfig() {
 async function loadChannels() {
   els.status.textContent = 'Loading channels…';
   try {
-    const channels = await fetchJSON('/api/channels');
+    const channels = await fetchJSON('api/channels');
     renderChannels(channels);
     els.status.textContent = channels.length ? '' : 'No channels found.';
   } catch (e) {
@@ -181,7 +181,10 @@ function play(ch) {
   started = false;
   userPaused = false;
   const profile = els.profile.value;
-  const src = `/stream/${encodeURIComponent(ch.number)}/index.m3u8?profile=${encodeURIComponent(profile)}`;
+  // Resolve relative to the page so the stream (and its segments) inherit any
+  // path prefix the app is served under, e.g. a secret /s/TOKEN/ behind a proxy.
+  const rel = `stream/${encodeURIComponent(ch.number)}/index.m3u8?profile=${encodeURIComponent(profile)}`;
+  const src = new URL(rel, document.baseURI).href;
 
   els.player.classList.remove('hidden');
   els.nowPlaying.textContent = `${ch.number} · ${ch.name}`;
