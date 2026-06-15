@@ -83,6 +83,19 @@ One ffmpeg process runs per active channel and is reaped ~30s after the last
 segment request, so tuners free themselves when you stop watching. Concurrent
 streams are capped at the device's tuner count (returns 503 when all are busy).
 
+## Tests
+
+```sh
+go test ./...          # everything (the stream tests spawn ffmpeg, ~15s)
+go test -short ./...   # fast: skips the ffmpeg pipeline tests
+```
+
+The pure logic and HTTP handlers (channel/playlist generation, proxy-aware URL
+building, tuner-busy detection) are covered with stdlib `testing` + `httptest`.
+The end-to-end pipeline tests (segment production, tuner-busy/limit handling) run
+a real ffmpeg against a fake device and are skipped automatically under `-short`
+or when ffmpeg isn't on `PATH`.
+
 ## Smoke test without the tuner
 
 `cmd/mockhdhr` emulates the HDHomeRun API with an ffmpeg-generated test pattern:
