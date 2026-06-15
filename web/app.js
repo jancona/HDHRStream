@@ -175,7 +175,7 @@ function channelButton(ch) {
   return btn;
 }
 
-function play(ch) {
+async function play(ch) {
   currentChannel = ch;
   wantPlaying = true;
   started = false;
@@ -190,9 +190,29 @@ function play(ch) {
   els.nowPlaying.textContent = `${ch.number} · ${ch.name}`;
   hideError();
   showLoading();
-  startWatchdog();
   teardownHls();
 
+  // Pre-flight: this request starts the stream, and lets us turn a tuner/
+  // availability failure into a clear message instead of a hung spinner. The
+  // player below then re-fetches the now-warm playlist.
+  let resp;
+  try {
+    resp = await fetch(src, { cache: 'no-store' });
+  } catch {
+    if (currentChannel === ch) failPlayback('Could not reach the server.');
+    return;
+  }
+  if (currentChannel !== ch || !wantPlaying) return; // a newer selection superseded this one
+  if (resp.status === 503) {
+    failPlayback('All tuners are in use. Another stream — or an HDHomeRun recording — may be using the tuner. Stop one and try again.');
+    return;
+  }
+  if (!resp.ok) {
+    failPlayback('Could not start this channel. It may be unavailable or have no signal.');
+    return;
+  }
+
+  startWatchdog();
   const video = els.video;
 
   // Safari (incl. iPad/iPhone) plays HLS natively.
@@ -247,7 +267,7 @@ function play(ch) {
     return;
   }
 
-  showError('This browser cannot play HLS.');
+  failPlayback('This browser cannot play HLS.');
 }
 
 function stopPlayback() {
@@ -273,6 +293,15 @@ function showError(msg) {
   hideLoading();
   els.playerError.textContent = msg;
   els.playerError.classList.remove('hidden');
+}
+
+// failPlayback gives up on the current attempt: stops the recovery watchdog and
+// shows a message, so a tuner/availability failure reads clearly instead of
+// spinning forever.
+function failPlayback(msg) {
+  wantPlaying = false;
+  stopWatchdog();
+  showError(msg);
 }
 
 function hideError() {

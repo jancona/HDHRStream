@@ -11,7 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,13 +35,14 @@ type Manager struct {
 }
 
 type session struct {
-	id       string
-	srcURL   string // the HDHR URL (incl. ?transcode=) this session is streaming
-	dir      string
-	cancel   context.CancelFunc
-	done     chan struct{}
-	mu       sync.Mutex
-	lastSeen time.Time
+	id        string
+	srcURL    string // the HDHR URL (incl. ?transcode=) this session is streaming
+	dir       string
+	cancel    context.CancelFunc
+	done      chan struct{}
+	tunerBusy atomic.Bool // set if ffmpeg reported the device had no free tuner
+	mu        sync.Mutex
+	lastSeen  time.Time
 }
 
 func NewManager(cfg Config) *Manager {
@@ -67,8 +70,14 @@ func sanitizeID(id string) string {
 	return unsafeChars.ReplaceAllString(id, "_")
 }
 
-// ErrTunersBusy is returned when all tuners are already in use.
+// ErrTunersBusy is returned when all of our own sessions are in use (we've hit
+// the configured tuner limit before even asking the device).
 var ErrTunersBusy = fmt.Errorf("all tuners busy")
+
+// ErrTunerUnavailable is returned when the HDHomeRun itself had no free tuner —
+// e.g. a DVR recording or another app is using it. Detected from ffmpeg failing
+// to open the input with a server error.
+var ErrTunerUnavailable = fmt.Errorf("no tuner available on device")
 
 // EnsurePlaylist starts (or reuses) a session for the given channel and returns
 // the absolute path to its HLS playlist once it is ready to serve.
@@ -115,6 +124,9 @@ func (m *Manager) EnsurePlaylist(srcURL, channelID string) (string, error) {
 		}
 		select {
 		case <-s.done:
+			if s.tunerBusy.Load() {
+				return "", ErrTunerUnavailable
+			}
 			return "", fmt.Errorf("ffmpeg for channel %s exited before producing a playlist", channelID)
 		case <-time.After(200 * time.Millisecond):
 		}
@@ -136,6 +148,15 @@ func playlistSegments(path string) int {
 		return 0
 	}
 	return bytes.Count(data, []byte("#EXTINF"))
+}
+
+// indicatesTunerBusy reports whether an ffmpeg stderr line shows the HDHomeRun
+// refused the stream because it had no free tuner. The device answers the stream
+// request with a 503, which ffmpeg surfaces as a server-error opening the input.
+func indicatesTunerBusy(line string) bool {
+	return strings.Contains(line, "503") ||
+		strings.Contains(line, "HTTP error 5") ||
+		strings.Contains(line, "Server returned 5")
 }
 
 // SegmentPath returns the absolute path to a named segment/playlist file within
@@ -185,15 +206,6 @@ func (m *Manager) startSession(srcURL, id string) (*session, error) {
 		"-hls_segment_filename", filepath.Join(dir, "seg%05d.ts"),
 		filepath.Join(dir, "index.m3u8"),
 	}
-	cmd := exec.CommandContext(ctx, m.cfg.FFmpegPath, args...)
-	cmd.Stderr = newLogWriter(id)
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("starting ffmpeg: %w", err)
-	}
-	log.Printf("[stream %s] started ffmpeg (pid %d)", id, cmd.Process.Pid)
-
 	s := &session{
 		id:       id,
 		srcURL:   srcURL,
@@ -202,6 +214,20 @@ func (m *Manager) startSession(srcURL, id string) (*session, error) {
 		done:     make(chan struct{}),
 		lastSeen: time.Now(),
 	}
+
+	cmd := exec.CommandContext(ctx, m.cfg.FFmpegPath, args...)
+	cmd.Stderr = newLogWriter(id, func(line string) {
+		if indicatesTunerBusy(line) {
+			s.tunerBusy.Store(true)
+		}
+	})
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("starting ffmpeg: %w", err)
+	}
+	log.Printf("[stream %s] started ffmpeg (pid %d)", id, cmd.Process.Pid)
+
 	go func() {
 		err := cmd.Wait()
 		log.Printf("[stream %s] ffmpeg exited: %v", id, err)

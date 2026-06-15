@@ -7,14 +7,16 @@ import (
 )
 
 // logWriter forwards ffmpeg's stderr to the standard logger, line by line,
-// prefixed with the channel id.
+// prefixed with the channel id, and hands each line to an optional inspector
+// (used to spot why a stream failed to start).
 type logWriter struct {
-	prefix string
-	buf    bytes.Buffer
+	prefix  string
+	inspect func(line string)
+	buf     bytes.Buffer
 }
 
-func newLogWriter(id string) io.Writer {
-	return &logWriter{prefix: "[ffmpeg " + id + "] "}
+func newLogWriter(id string, inspect func(line string)) io.Writer {
+	return &logWriter{prefix: "[ffmpeg " + id + "] ", inspect: inspect}
 }
 
 func (w *logWriter) Write(p []byte) (int, error) {
@@ -27,7 +29,11 @@ func (w *logWriter) Write(p []byte) (int, error) {
 			w.buf.WriteString(line)
 			break
 		}
-		log.Print(w.prefix, line[:len(line)-1])
+		line = line[:len(line)-1]
+		log.Print(w.prefix, line)
+		if w.inspect != nil {
+			w.inspect(line)
+		}
 	}
 	return len(p), nil
 }

@@ -218,11 +218,15 @@ func (s *srv) servePlaylist(w http.ResponseWriter, r *http.Request, ch string) {
 	}
 
 	path, err := s.cfg.Manager.EnsurePlaylist(srcURL, ch)
-	if err == stream.ErrTunersBusy {
+	switch err {
+	case nil:
+		// proceed
+	case stream.ErrTunersBusy, stream.ErrTunerUnavailable:
+		// Our own limit, or the device itself had no free tuner (e.g. a DVR
+		// recording). Either way: 503 so the client can say "tuners busy".
 		http.Error(w, "all tuners are in use", http.StatusServiceUnavailable)
 		return
-	}
-	if err != nil {
+	default:
 		log.Printf("playlist error for %s: %v", ch, err)
 		http.Error(w, "could not start stream", http.StatusBadGateway)
 		return
