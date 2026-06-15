@@ -77,6 +77,38 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// externalBase returns the public-facing base URL (scheme://host[/prefix]) the
+// client used to reach us, honoring reverse-proxy headers so that generated
+// absolute URLs are correct behind a proxy that terminates TLS and/or serves the
+// app under a path prefix (e.g. a secret /s/TOKEN/). Apache should set
+// X-Forwarded-Proto and X-Forwarded-Prefix; Host is preserved via
+// ProxyPreserveHost.
+func externalBase(r *http.Request) string {
+	scheme := firstField(r.Header.Get("X-Forwarded-Proto"))
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	host := firstField(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	prefix := strings.TrimRight(firstField(r.Header.Get("X-Forwarded-Prefix")), "/")
+	return scheme + "://" + host + prefix
+}
+
+// firstField returns the first comma-separated value of a header, trimmed
+// (proxies may chain multiple values).
+func firstField(v string) string {
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
 type srv struct {
 	cfg Config
 }
@@ -125,6 +157,7 @@ func (s *srv) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	profile := s.profile(r)
+	base := externalBase(r)
 
 	var favs, others []hdhr.Channel
 	for _, c := range chans {
@@ -141,11 +174,13 @@ func (s *srv) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n")
 	write := func(c hdhr.Channel, group string) {
-		// Relative URL so it inherits whatever path the playlist is served under
-		// (e.g. a secret /s/TOKEN/ prefix behind a reverse proxy); HLS resolves
-		// the per-channel and segment URLs relative to this in turn.
-		streamURL := fmt.Sprintf("stream/%s/index.m3u8?profile=%s",
-			url.PathEscape(c.GuideNumber), url.QueryEscape(profile))
+		// Absolute URL: IPTV players (e.g. Bro on Apple TV) store playlist entries
+		// detached from the playlist's own URL, so relative entries never resolve.
+		// externalBase honors reverse-proxy headers so the scheme, host and any
+		// secret path prefix are correct. The HLS segments inside index.m3u8 stay
+		// relative and are resolved by the player against this URL.
+		streamURL := fmt.Sprintf("%s/stream/%s/index.m3u8?profile=%s",
+			base, url.PathEscape(c.GuideNumber), url.QueryEscape(profile))
 		fmt.Fprintf(&b, "#EXTINF:-1 tvg-chno=%q tvg-name=%q group-title=%q,%s %s\n%s\n",
 			c.GuideNumber, c.GuideName, group, c.GuideNumber, c.GuideName, streamURL)
 	}
