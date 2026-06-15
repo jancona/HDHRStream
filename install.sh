@@ -62,7 +62,10 @@ fi
 info "Installing systemd unit"
 $SUDO install -m 0644 "$SCRIPT_DIR/deploy/hdhrstream.service" "$SERVICE_FILE"
 $SUDO systemctl daemon-reload
-$SUDO systemctl enable --now "$SERVICE_NAME"
+$SUDO systemctl enable "$SERVICE_NAME"
+# restart (not just start) so a re-run actually picks up the freshly built binary;
+# restart also starts the service if it wasn't already running.
+$SUDO systemctl restart "$SERVICE_NAME"
 
 info "Done. The service is running:"
 echo
