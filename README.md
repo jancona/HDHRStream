@@ -103,3 +103,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o hdhrstream .
 
 The systemd unit and config templates live in [deploy/](deploy/); `./install.sh`
 applies them.
+
+## License
+
+Copyright 2026 Jim Ancona
+
+Licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE).
