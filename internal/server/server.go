@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"hdhrstream/internal/dvr"
 	"hdhrstream/internal/hdhr"
 	"hdhrstream/internal/stream"
 )
@@ -24,9 +25,11 @@ import (
 type Config struct {
 	Client          *hdhr.Client
 	Manager         *stream.Manager
-	WebFS           fs.FS    // embedded SPA assets
-	DefaultProfile  string   // default transcode profile, e.g. "mobile"
-	Profiles        []string // profiles to offer in the UI, in display order
+	DVR             *dvr.Client        // optional: DVR record engine (nil = recordings disabled)
+	VOD             *stream.VODManager // recordings transcoder (used when DVR is set)
+	WebFS           fs.FS              // embedded SPA assets
+	DefaultProfile  string             // default transcode profile, e.g. "mobile"
+	Profiles        []string           // profiles to offer in the UI, in display order
 	AllowedProfiles map[string]bool
 	Debug           bool // verbose request logging + browser console tracing
 }
@@ -39,6 +42,11 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/channels", s.handleChannels)
 	mux.HandleFunc("GET /playlist.m3u", s.handlePlaylist)
 	mux.HandleFunc("GET /stream/{ch}/{file}", s.handleStream)
+	if cfg.DVR != nil {
+		mux.HandleFunc("GET /api/recordings", s.handleSeries)
+		mux.HandleFunc("GET /api/recordings/{series}", s.handleEpisodes)
+		mux.HandleFunc("GET /rec/{id}/{file}", s.handleRecording)
+	}
 	mux.Handle("GET /", http.FileServerFS(cfg.WebFS))
 	return logRequests(mux, cfg.Debug)
 }
@@ -125,6 +133,7 @@ func (s *srv) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"defaultProfile": s.cfg.DefaultProfile,
 		"profiles":       s.cfg.Profiles,
 		"debug":          s.cfg.Debug,
+		"recordings":     s.cfg.DVR != nil,
 	})
 }
 
@@ -193,6 +202,103 @@ func (s *srv) handlePlaylist(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "audio/x-mpegurl")
 	io.WriteString(w, b.String())
+}
+
+type seriesDTO struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Image string `json:"image,omitempty"`
+}
+
+type episodeDTO struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Episode    string `json:"episode,omitempty"`  // e.g. "S42E200"
+	Subtitle   string `json:"subtitle,omitempty"` // episode title, if any
+	Synopsis   string `json:"synopsis,omitempty"`
+	Channel    string `json:"channel,omitempty"`
+	Image      string `json:"image,omitempty"`
+	RecordedAt int64  `json:"recordedAt,omitempty"` // unix seconds
+	Duration   int64  `json:"duration,omitempty"`   // seconds
+}
+
+func (s *srv) handleSeries(w http.ResponseWriter, r *http.Request) {
+	series, err := s.cfg.DVR.Series(r.Context())
+	if err != nil {
+		log.Printf("dvr series error: %v", err)
+		http.Error(w, "could not reach the DVR", http.StatusBadGateway)
+		return
+	}
+	out := make([]seriesDTO, 0, len(series))
+	for _, se := range series {
+		out = append(out, seriesDTO{ID: se.SeriesID, Title: se.Title, Image: se.ImageURL})
+	}
+	writeJSON(w, out)
+}
+
+func (s *srv) handleEpisodes(w http.ResponseWriter, r *http.Request) {
+	eps, err := s.cfg.DVR.Episodes(r.Context(), r.PathValue("series"))
+	if err != nil {
+		log.Printf("dvr episodes error: %v", err)
+		http.Error(w, "could not reach the DVR", http.StatusBadGateway)
+		return
+	}
+	out := make([]episodeDTO, 0, len(eps))
+	for _, e := range eps {
+		id := dvr.RecordingID(e.PlayURL)
+		if id == "" {
+			continue
+		}
+		out = append(out, episodeDTO{
+			ID:         id,
+			Title:      e.Title,
+			Episode:    e.EpisodeNumber,
+			Subtitle:   e.EpisodeTitle,
+			Synopsis:   e.Synopsis,
+			Channel:    e.ChannelName,
+			Image:      e.ImageURL,
+			RecordedAt: e.RecordStartTime,
+			Duration:   e.RecordEndTime - e.RecordStartTime,
+		})
+	}
+	writeJSON(w, out)
+}
+
+func (s *srv) handleRecording(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	file := r.PathValue("file")
+	switch {
+	case file == "index.m3u8":
+		s.serveRecPlaylist(w, r, id)
+	case strings.HasSuffix(file, ".ts"):
+		path, ok := s.cfg.VOD.SegmentPath(id, file)
+		if !ok {
+			http.Error(w, "no active recording", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp2t")
+		http.ServeFile(w, r, path)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (s *srv) serveRecPlaylist(w http.ResponseWriter, r *http.Request, id string) {
+	path, err := s.cfg.VOD.EnsurePlaylist(s.cfg.DVR.PlayURL(id), id, s.profile(r))
+	switch err {
+	case nil:
+		// proceed
+	case stream.ErrBusy:
+		http.Error(w, "the server is busy transcoding other recordings", http.StatusServiceUnavailable)
+		return
+	default:
+		log.Printf("recording error for %s: %v", id, err)
+		http.Error(w, "could not start recording", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, path)
 }
 
 func (s *srv) handleStream(w http.ResponseWriter, r *http.Request) {

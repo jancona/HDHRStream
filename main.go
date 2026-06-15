@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"hdhrstream/internal/dvr"
 	"hdhrstream/internal/hdhr"
 	"hdhrstream/internal/server"
 	"hdhrstream/internal/stream"
@@ -37,6 +38,8 @@ func main() {
 		ffmpegPath = flag.String("ffmpeg", envOr("HDHR_FFMPEG", "ffmpeg"), "path to ffmpeg binary")
 		ffmpegLog  = flag.String("ffmpeg-loglevel", envOr("HDHR_FFMPEG_LOGLEVEL", "warning"), "ffmpeg -loglevel (warning, info, verbose)")
 		debug      = flag.Bool("debug", envBool("HDHR_DEBUG"), "verbose debugging: per-request server logs, ffmpeg verbose, browser console tracing")
+		dvrURL     = flag.String("dvr", envOr("HDHR_DVR", ""), "HDHomeRun RECORD engine URL for DVR playback, e.g. http://192.168.1.140:65001 (optional)")
+		recWorkDir = flag.String("rec-workdir", envOr("HDHR_REC_WORKDIR", filepath.Join(os.TempDir(), "hdhrstream-rec")), "disk-backed scratch for transcoded recordings (do not use tmpfs)")
 	)
 	flag.Parse()
 
@@ -74,6 +77,20 @@ func main() {
 	})
 	defer mgr.Shutdown()
 
+	// Optional DVR (recordings) support.
+	var dvrClient *dvr.Client
+	var vodMgr *stream.VODManager
+	if *dvrURL != "" {
+		dvrClient = dvr.New(*dvrURL)
+		vodMgr = stream.NewVODManager(stream.VODConfig{
+			FFmpegPath: *ffmpegPath,
+			FFmpegLog:  ffLog,
+			WorkDir:    *recWorkDir,
+		})
+		defer vodMgr.Shutdown()
+		log.Printf("DVR recordings enabled (%s), scratch %s", *dvrURL, *recWorkDir)
+	}
+
 	webFS, err := fs.Sub(webAssets, "web")
 	if err != nil {
 		log.Fatalf("web assets: %v", err)
@@ -90,6 +107,8 @@ func main() {
 	handler := server.New(server.Config{
 		Client:          client,
 		Manager:         mgr,
+		DVR:             dvrClient,
+		VOD:             vodMgr,
 		WebFS:           webFS,
 		DefaultProfile:  *profile,
 		Profiles:        allowedProfiles,

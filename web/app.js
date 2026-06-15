@@ -1,7 +1,16 @@
 'use strict';
 
 const els = {
+  views: document.getElementById('views'),
+  viewLive: document.getElementById('view-live'),
+  viewRecordings: document.getElementById('view-recordings'),
   channels: document.getElementById('channels'),
+  recordings: document.getElementById('recordings'),
+  series: document.getElementById('series'),
+  episodes: document.getElementById('episodes'),
+  episodesTitle: document.getElementById('episodes-title'),
+  episodeList: document.getElementById('episode-list'),
+  episodesBack: document.getElementById('episodes-back'),
   status: document.getElementById('status'),
   player: document.getElementById('player'),
   video: document.getElementById('video'),
@@ -12,11 +21,13 @@ const els = {
   loading: document.getElementById('loading'),
 };
 
-let DEBUG = false; // enabled from /api/config when the server runs with -debug
+let DEBUG = false;       // enabled from /api/config when the server runs with -debug
+let RECORDINGS = false;  // enabled when a DVR is configured
 function log(...a) { if (DEBUG) console.log('[hdhr]', ...a); }
 
 let hls = null;          // active hls.js instance, if any
-let currentChannel = null;
+let current = null;      // {src, title, busyMsg, live} of what we're playing
+let seriesLoaded = false;
 let wantPlaying = false; // we intend the stream to be playing
 let started = false;     // playback has begun at least once (past the tuning phase)
 let userPaused = false;  // the user deliberately paused; don't auto-resume
@@ -26,10 +37,18 @@ let watchdog = null;     // interval that recovers from stall-induced pauses
 async function init() {
   await loadConfig();
   await loadChannels();
+
   els.close.addEventListener('click', stopPlayback);
   els.profile.addEventListener('change', () => {
-    if (currentChannel) play(currentChannel); // re-tune at new quality
+    if (current) playStream(current.src, current.title, current.busyMsg, current.live); // re-tune at new quality
   });
+  if (RECORDINGS) {
+    els.views.classList.remove('hidden');
+    els.viewLive.addEventListener('click', () => showView('live'));
+    els.viewRecordings.addEventListener('click', () => showView('recordings'));
+    els.episodesBack.addEventListener('click', () => els.episodes.classList.add('hidden'));
+  }
+
   // A live stream pauses (rather than silently re-buffering) when its buffer
   // drains on a network hiccup — notably on iOS Safari. We want to auto-resume
   // those, but respect a deliberate pause. We tell them apart by whether the
@@ -49,6 +68,15 @@ async function init() {
       log('video', e, 't=' + v.currentTime.toFixed(1), 'ready=' + v.readyState, 'paused=' + v.paused);
     });
   }
+}
+
+function showView(view) {
+  const live = view === 'live';
+  els.viewLive.classList.toggle('active', live);
+  els.viewRecordings.classList.toggle('active', !live);
+  els.channels.classList.toggle('hidden', !live);
+  els.recordings.classList.toggle('hidden', live);
+  if (!live && !seriesLoaded) loadSeries();
 }
 
 function showLoading() { els.loading.classList.remove('hidden'); }
@@ -90,15 +118,14 @@ function tickWatchdog() {
   log('no progress', (stalledMs / 1000).toFixed(1) + 's', 't=' + v.currentTime.toFixed(1),
     'paused=' + v.paused, 'ready=' + v.readyState, 'buffered=' + bufferedAhead(v).toFixed(1) + 's');
 
-  if (stalledMs > 8000 && Date.now() - lastReload > 12000) {
-    // Dry for >8s: soft recovery has failed. Reload the stream from scratch,
-    // which re-fetches the playlist (and re-tunes the tuner if the server's
-    // ffmpeg died). This is the only thing that recovers a fully-starved buffer.
+  // Hard reload only makes sense for live: a starved live buffer can't be nudged,
+  // only re-fetched. For a recording, reloading would restart the transcode from
+  // the beginning, so we only ever soft-nudge and let it wait for segments.
+  if (current && current.live && stalledMs > 8000 && Date.now() - lastReload > 12000) {
     lastReload = Date.now();
     log('hard reload (stall recovery)');
-    play(currentChannel);
+    playStream(current.src, current.title, current.busyMsg, current.live);
   } else if (hls) {
-    // Soft nudge: tell hls.js to (re)start loading; wake the element if paused.
     hls.startLoad();
     if (v.paused) v.play().catch(() => {});
   }
@@ -122,6 +149,7 @@ async function loadConfig() {
   try {
     const cfg = await fetchJSON('api/config');
     DEBUG = !!cfg.debug;
+    RECORDINGS = !!cfg.recordings;
     els.profile.innerHTML = '';
     for (const p of cfg.profiles) {
       const opt = document.createElement('option');
@@ -152,7 +180,6 @@ function renderChannels(channels) {
   const others = channels.filter((ch) => !ch.favorite);
 
   for (const ch of favorites) els.channels.appendChild(channelButton(ch));
-  // Only show a divider if both groups are non-empty.
   if (favorites.length && others.length) {
     const sep = document.createElement('div');
     sep.className = 'separator';
@@ -171,44 +198,126 @@ function channelButton(ch) {
     (ch.favorite ? '<span class="star" aria-label="favorite">★</span>' : '') +
     (ch.hd ? '<span class="hd">HD</span>' : '') +
     `<span class="name">${escapeHTML(ch.name)}</span>`;
-  btn.addEventListener('click', () => play(ch));
+  btn.addEventListener('click', () => playChannel(ch));
   return btn;
 }
 
-async function play(ch) {
-  currentChannel = ch;
+// --- Recordings ------------------------------------------------------------
+
+async function loadSeries() {
+  seriesLoaded = true;
+  els.series.innerHTML = '<p class="status">Loading recordings…</p>';
+  try {
+    const series = await fetchJSON('api/recordings');
+    els.series.innerHTML = '';
+    if (!series.length) {
+      els.series.innerHTML = '<p class="status">No recordings.</p>';
+      return;
+    }
+    for (const s of series) els.series.appendChild(seriesCard(s));
+  } catch (e) {
+    seriesLoaded = false;
+    els.series.innerHTML = `<p class="status">Could not load recordings: ${escapeHTML(e.message)}</p>`;
+  }
+}
+
+function seriesCard(s) {
+  const btn = document.createElement('button');
+  btn.className = 'series-card';
+  btn.type = 'button';
+  const img = s.image ? `<img loading="lazy" src="${escapeHTML(s.image)}" alt="">` : '<div class="noart"></div>';
+  btn.innerHTML = `${img}<span class="series-title">${escapeHTML(s.title)}</span>`;
+  btn.addEventListener('click', () => loadEpisodes(s));
+  return btn;
+}
+
+async function loadEpisodes(s) {
+  els.episodesTitle.textContent = s.title;
+  els.episodeList.innerHTML = '<p class="status">Loading…</p>';
+  els.episodes.classList.remove('hidden');
+  try {
+    const eps = await fetchJSON('api/recordings/' + encodeURIComponent(s.id));
+    els.episodeList.innerHTML = '';
+    for (const ep of eps) els.episodeList.appendChild(episodeRow(ep));
+  } catch (e) {
+    els.episodeList.innerHTML = `<p class="status">Could not load episodes: ${escapeHTML(e.message)}</p>`;
+  }
+}
+
+function episodeRow(ep) {
+  const btn = document.createElement('button');
+  btn.className = 'episode';
+  btn.type = 'button';
+  // Series title is already the header; lead each row with the episode title,
+  // else the episode number, else the recording date.
+  const head = ep.subtitle || ep.episode || formatDate(ep.recordedAt) || ep.title;
+  const meta = [ep.subtitle ? ep.episode : null, ep.channel, formatDate(ep.recordedAt), formatDuration(ep.duration)]
+    .filter(Boolean).join(' · ');
+  btn.innerHTML =
+    `<span class="ep-head">${escapeHTML(head)}</span>` +
+    (meta ? `<span class="ep-meta">${escapeHTML(meta)}</span>` : '') +
+    (ep.synopsis ? `<span class="ep-synopsis">${escapeHTML(ep.synopsis)}</span>` : '');
+  btn.addEventListener('click', () => playRecording(ep));
+  return btn;
+}
+
+function formatDate(unix) {
+  if (!unix) return '';
+  return new Date(unix * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDuration(secs) {
+  if (!secs) return '';
+  return Math.round(secs / 60) + ' min';
+}
+
+// --- Playback --------------------------------------------------------------
+
+function playChannel(ch) {
+  const profile = els.profile.value;
+  const rel = `stream/${encodeURIComponent(ch.number)}/index.m3u8?profile=${encodeURIComponent(profile)}`;
+  playStream(new URL(rel, document.baseURI).href, `${ch.number} · ${ch.name}`,
+    'All tuners are in use. Another stream — or an HDHomeRun recording — may be using the tuner. Stop one and try again.',
+    true);
+}
+
+function playRecording(ep) {
+  const profile = els.profile.value;
+  const rel = `rec/${encodeURIComponent(ep.id)}/index.m3u8?profile=${encodeURIComponent(profile)}`;
+  const title = ep.episode ? `${ep.title} · ${ep.episode}` : ep.title;
+  playStream(new URL(rel, document.baseURI).href, title,
+    'The server is busy transcoding other recordings. Try again shortly.',
+    false);
+}
+
+async function playStream(src, title, busyMsg, live) {
+  current = { src, title, busyMsg, live };
   wantPlaying = true;
   started = false;
   userPaused = false;
-  const profile = els.profile.value;
-  // Resolve relative to the page so the stream (and its segments) inherit any
-  // path prefix the app is served under, e.g. a secret /s/TOKEN/ behind a proxy.
-  const rel = `stream/${encodeURIComponent(ch.number)}/index.m3u8?profile=${encodeURIComponent(profile)}`;
-  const src = new URL(rel, document.baseURI).href;
 
   els.player.classList.remove('hidden');
-  els.nowPlaying.textContent = `${ch.number} · ${ch.name}`;
+  els.nowPlaying.textContent = title;
   hideError();
   showLoading();
   teardownHls();
 
-  // Pre-flight: this request starts the stream, and lets us turn a tuner/
-  // availability failure into a clear message instead of a hung spinner. The
-  // player below then re-fetches the now-warm playlist.
+  // Pre-flight: this request starts the stream/transcode, and lets us turn a
+  // busy/availability failure into a clear message instead of a hung spinner.
   let resp;
   try {
     resp = await fetch(src, { cache: 'no-store' });
   } catch {
-    if (currentChannel === ch) failPlayback('Could not reach the server.');
+    if (current && current.src === src) failPlayback('Could not reach the server.');
     return;
   }
-  if (currentChannel !== ch || !wantPlaying) return; // a newer selection superseded this one
+  if (!current || current.src !== src || !wantPlaying) return; // superseded by a newer selection
   if (resp.status === 503) {
-    failPlayback('All tuners are in use. Another stream — or an HDHomeRun recording — may be using the tuner. Stop one and try again.');
+    failPlayback(busyMsg);
     return;
   }
   if (!resp.ok) {
-    failPlayback('Could not start this channel. It may be unavailable or have no signal.');
+    failPlayback('Could not start playback. It may be unavailable or have no signal.');
     return;
   }
 
@@ -236,8 +345,8 @@ async function play(ch) {
       // the server holds the first playlist request open. Tolerate that.
       manifestLoadingTimeOut: 25000,
       levelLoadingTimeOut: 25000,
-      // Be forgiving of small timestamp gaps in the remuxed stream so playback
-      // skips them instead of stalling.
+      // Be forgiving of small timestamp gaps in the stream so playback skips them
+      // instead of stalling.
       maxBufferHole: 0.5,
       nudgeMaxRetry: 10,
     });
@@ -247,7 +356,7 @@ async function play(ch) {
     hls.on(Hls.Events.ERROR, (_evt, data) => {
       log('hls error', data.type, data.details, 'fatal=' + data.fatal);
       if (data.details === Hls.ErrorDetails.BUFFER_STALLED_ERROR) {
-        hls.startLoad(); // non-fatal; the watchdog escalates to a reload if needed
+        hls.startLoad(); // non-fatal; the watchdog escalates if needed
         return;
       }
       if (!data.fatal) return;
@@ -261,7 +370,7 @@ async function play(ch) {
           els.video.play().catch(() => {});
           break;
         default:
-          showError(`Playback error (${data.type}). The tuner may be busy or starting up — try again.`);
+          showError(`Playback error (${data.type}). Try again.`);
       }
     });
     return;
@@ -277,7 +386,7 @@ function stopPlayback() {
   els.video.removeAttribute('src');
   els.video.load();
   els.player.classList.add('hidden');
-  currentChannel = null;
+  current = null;
   hideError();
   hideLoading();
 }
@@ -296,7 +405,7 @@ function showError(msg) {
 }
 
 // failPlayback gives up on the current attempt: stops the recovery watchdog and
-// shows a message, so a tuner/availability failure reads clearly instead of
+// shows a message, so a busy/availability failure reads clearly instead of
 // spinning forever.
 function failPlayback(msg) {
   wantPlaying = false;

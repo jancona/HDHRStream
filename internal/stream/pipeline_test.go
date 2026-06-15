@@ -87,6 +87,47 @@ func TestEnsurePlaylistTunerUnavailable(t *testing.T) {
 	}
 }
 
+// fakeRecording serves a short, finite MPEG-2/AC-3 clip (like a real DVR
+// recording) as fast as possible, so the transcode test runs quickly.
+func fakeRecording(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		cmd := exec.CommandContext(r.Context(), "ffmpeg",
+			"-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=15:duration=15",
+			"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=15",
+			"-c:v", "mpeg2video", "-c:a", "ac3",
+			"-f", "mpegts", "pipe:1",
+		)
+		cmd.Stdout = w
+		cmd.Run()
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestVODTranscode(t *testing.T) {
+	requireFFmpeg(t)
+
+	device := fakeRecording(t)
+	m := NewVODManager(VODConfig{
+		FFmpegPath:  "ffmpeg",
+		WorkDir:     t.TempDir(),
+		Limit:       2,
+		StartupWait: 30 * time.Second,
+	})
+	defer m.Shutdown()
+
+	path, err := m.EnsurePlaylist(device.URL+"/recorded/play?id=x", "x", "internet480")
+	if err != nil {
+		t.Fatalf("EnsurePlaylist: %v", err)
+	}
+	if n := playlistSegments(path); n < 2 {
+		t.Errorf("expected transcoded recording with >=2 segments, got %d", n)
+	}
+}
+
 func TestEnsurePlaylistTunerLimit(t *testing.T) {
 	requireFFmpeg(t)
 

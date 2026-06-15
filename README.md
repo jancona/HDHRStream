@@ -63,6 +63,8 @@ All flags have env-var equivalents:
 | `-ffmpeg`   | `HDHR_FFMPEG`   | `ffmpeg`                 | Path to ffmpeg                          |
 | `-ffmpeg-loglevel` | `HDHR_FFMPEG_LOGLEVEL` | `warning`     | ffmpeg `-loglevel` (`warning`, `info`, `verbose`) |
 | `-debug`    | `HDHR_DEBUG`    | `false`                  | Verbose debugging: per-request server logs, ffmpeg `verbose`, and the browser `[hdhr]` console trace |
+| `-dvr`      | `HDHR_DVR`      | (off)                    | HDHomeRun RECORD engine URL (e.g. `http://192.168.1.140:65001`) to enable DVR recording playback |
+| `-rec-workdir` | `HDHR_REC_WORKDIR` | `$TMPDIR/hdhrstream-rec` | Disk scratch for transcoded recordings — **must not be tmpfs** (recordings are large) |
 
 By default the server logs only startup, stream sessions, and failed requests.
 Run with `-debug` (or `HDHR_DEBUG=1`) to trace everything while diagnosing
@@ -82,6 +84,15 @@ Lower = less upload bandwidth.
 One ffmpeg process runs per active channel and is reaped ~30s after the last
 segment request, so tuners free themselves when you stop watching. Concurrent
 streams are capped at the device's tuner count (returns 503 when all are busy).
+
+### DVR recordings (optional)
+
+Set `-dvr`/`HDHR_DVR` to your RECORD engine's URL to add a **Recordings** view
+(Series → Episodes → play). Recordings are stored full-quality MPEG-2/AC-3, so
+the server transcodes them to H.264/AAC HLS on the fly with ffmpeg — heavier than
+live (which only remuxes), and concurrency is capped separately (2 by default).
+No tuner is used, so recording playback never conflicts with live TV or
+recordings. Transcoded segments are written to `-rec-workdir` (disk, not tmpfs).
 
 ## Tests
 

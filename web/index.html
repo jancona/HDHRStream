@@ -29,8 +29,22 @@
       <div id="player-error" class="error hidden"></div>
     </section>
 
+    <nav id="views" class="views hidden">
+      <button id="view-live" class="view-tab active" type="button">Live</button>
+      <button id="view-recordings" class="view-tab" type="button">Recordings</button>
+    </nav>
+
     <section id="channels" class="grid" aria-live="polite"></section>
     <p id="status" class="status"></p>
+
+    <section id="recordings" class="hidden">
+      <div id="series" class="grid"></div>
+      <div id="episodes" class="episodes-view hidden">
+        <button id="episodes-back" class="back" type="button">← All series</button>
+        <h2 id="episodes-title"></h2>
+        <div id="episode-list" class="episodes"></div>
+      </div>
+    </section>
   </main>
 
   <!-- hls.js for browsers without native HLS (Chrome/Firefox/Android) -->

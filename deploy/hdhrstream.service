@@ -11,9 +11,14 @@ ExecStart=/opt/hdhrstream/hdhrstream
 Restart=on-failure
 RestartSec=3
 
-# HLS scratch lives on tmpfs at /run/hdhrstream, created and cleaned up by systemd.
+# Live HLS scratch lives on tmpfs at /run/hdhrstream, created+cleaned by systemd.
 RuntimeDirectory=hdhrstream
 Environment=HDHR_WORKDIR=%t/hdhrstream
+
+# Recording transcodes are large, so their scratch goes on disk at
+# /var/cache/hdhrstream (only used when -dvr/HDHR_DVR is set).
+CacheDirectory=hdhrstream
+Environment=HDHR_REC_WORKDIR=%C/hdhrstream
 
 # Run as a transient unprivileged user with a locked-down filesystem view.
 DynamicUser=yes
