@@ -182,9 +182,10 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	args := []string{
 		"-hide_banner", "-loglevel", m.cfg.FFmpegLog, "-nostats",
 		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
-		// No -re: let it transcode ahead of the playhead (the DVR feeds faster
-		// than real time) so there's slack to pause, rewind and skip into. The
-		// client treats the growing playlist as a seekable VOD, not a live edge.
+		// Read at real time: the DVR feeds faster than 1x, and letting the HLS
+		// playlist outrun the player makes it chase a runaway live edge and
+		// freeze. Seeking is a separate problem (see notes / WIP).
+		"-re",
 		"-i", srcURL,
 	}
 	// If the recording's video is already H.264, just copy it — a cheap real-time

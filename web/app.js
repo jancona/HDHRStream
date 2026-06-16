@@ -361,6 +361,7 @@ async function playStream(src, title, busyMsg, live) {
       cfg.backBufferLength = 90;
     }
     hls = new Hls(cfg);
+    if (DEBUG) window._hls = hls; // expose for console inspection
     hls.loadSource(src);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
