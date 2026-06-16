@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -140,6 +141,31 @@ func (m *VODManager) SegmentPath(id, name string) (string, bool) {
 	return filepath.Join(s.dir, filepath.Base(name)), true
 }
 
+// probeVideoCodec returns the recording's video codec (e.g. "h264", "mpeg2video")
+// via ffprobe, or "" if it can't be determined. ffprobe is assumed to sit next to
+// ffmpeg. On failure we return "" so the caller takes the safe transcode path.
+func probeVideoCodec(ffmpegPath, srcURL string) string {
+	probe := "ffprobe"
+	if strings.ContainsAny(ffmpegPath, `/\`) {
+		probe = filepath.Join(filepath.Dir(ffmpegPath), "ffprobe")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, probe,
+		"-v", "error", "-rw_timeout", "8000000",
+		"-select_streams", "v:0", "-show_entries", "stream=codec_name",
+		"-of", "default=nw=1:nk=1", srcURL).Output()
+	if err != nil {
+		return ""
+	}
+	// ffprobe may print one line per matching stream; take the first.
+	codec := strings.TrimSpace(string(out))
+	if i := strings.IndexAny(codec, "\r\n"); i >= 0 {
+		codec = codec[:i]
+	}
+	return codec
+}
+
 func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	dir := filepath.Join(m.cfg.WorkDir, key)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -151,27 +177,40 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 		}
 	}
 
-	spec, ok := vodLadder[profile]
-	if !ok {
-		spec = vodLadder["internet480"]
-	}
-	height, vbitrate := spec[0], spec[1]
-
 	ctx, cancel := context.WithCancel(context.Background())
+
 	args := []string{
 		"-hide_banner", "-loglevel", m.cfg.FFmpegLog, "-nostats",
 		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
 		"-i", srcURL,
-		// Full transcode: recordings are MPEG-2 (often interlaced) + AC-3. Deinterlace,
-		// scale to the chosen height, encode H.264 + stereo AAC for browser HLS.
-		"-c:v", "libx264", "-preset", "veryfast",
-		"-vf", "yadif,scale=-2:" + height,
-		"-b:v", vbitrate, "-maxrate", vbitrate, "-bufsize", vbitrate,
-		"-profile:v", "high", "-pix_fmt", "yuv420p",
-		// Force a keyframe at every HLS segment boundary so segments are a
-		// consistent ~6s (libx264's default GOP is too long, which makes huge
-		// segments and slow seeking). Time-based, so it's framerate-independent.
-		"-force_key_frames", "expr:gte(t,n_forced*6)",
+	}
+	// If the recording's video is already H.264 (many ATSC 3.0 / transcoded
+	// recordings are), just copy it — a cheap real-time remux like the live path.
+	// Only MPEG-2 (etc.) needs a full, CPU-heavy transcode.
+	if codec := probeVideoCodec(m.cfg.FFmpegPath, srcURL); codec == "h264" {
+		log.Printf("[rec %s] video is h264; copying (remux only)", key)
+		args = append(args, "-c:v", "copy")
+	} else {
+		spec, ok := vodLadder[profile]
+		if !ok {
+			spec = vodLadder["internet480"]
+		}
+		height, vbitrate := spec[0], spec[1]
+		log.Printf("[rec %s] video is %q; transcoding to %sp @ %s", key, codec, height, vbitrate)
+		args = append(args,
+			"-c:v", "libx264", "-preset", "veryfast",
+			"-vf", "yadif,scale=-2:"+height,
+			"-b:v", vbitrate, "-maxrate", vbitrate, "-bufsize", vbitrate,
+			"-profile:v", "high", "-pix_fmt", "yuv420p",
+			// Force a keyframe at each HLS segment boundary so segments are a
+			// consistent ~6s (libx264's default GOP is too long). Time-based, so
+			// it's framerate-independent.
+			"-force_key_frames", "expr:gte(t,n_forced*6)",
+		)
+	}
+	// Audio is AC-3, which browsers can't decode over HLS; always re-encode to
+	// stereo AAC (cheap).
+	args = append(args,
 		"-c:a", "aac", "-ac", "2", "-b:a", "128k",
 		"-f", "hls",
 		"-hls_time", "6",
@@ -179,7 +218,7 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 		"-hls_segment_type", "mpegts",
 		"-hls_segment_filename", filepath.Join(dir, "seg%05d.ts"),
 		filepath.Join(dir, "index.m3u8"),
-	}
+	)
 	cmd := exec.CommandContext(ctx, m.cfg.FFmpegPath, args...)
 	cmd.Stderr = newLogWriter("rec:"+key, nil)
 

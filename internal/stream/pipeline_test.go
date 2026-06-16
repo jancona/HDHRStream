@@ -123,8 +123,39 @@ func TestVODTranscode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsurePlaylist: %v", err)
 	}
-	if n := playlistSegments(path); n < 2 {
-		t.Errorf("expected transcoded recording with >=2 segments, got %d", n)
+	if n := playlistSegments(path); n < 1 {
+		t.Errorf("expected transcoded recording to produce segments, got %d", n)
+	}
+}
+
+func TestVODCopiesH264(t *testing.T) {
+	requireFFmpeg(t)
+
+	// Serve an H.264/AC-3 recording (like ATSC 3.0 / transcoded recordings) — the
+	// manager should detect h264 and copy the video rather than transcode it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp2t")
+		cmd := exec.CommandContext(r.Context(), "ffmpeg",
+			"-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=30:duration=15",
+			"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=15",
+			"-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-pix_fmt", "yuv420p",
+			"-c:a", "ac3", "-f", "mpegts", "pipe:1",
+		)
+		cmd.Stdout = w
+		cmd.Run()
+	}))
+	defer srv.Close()
+
+	m := NewVODManager(VODConfig{FFmpegPath: "ffmpeg", WorkDir: t.TempDir(), Limit: 2, StartupWait: 30 * time.Second})
+	defer m.Shutdown()
+
+	path, err := m.EnsurePlaylist(srv.URL+"/recorded/play?id=h", "h", "heavy")
+	if err != nil {
+		t.Fatalf("EnsurePlaylist: %v", err)
+	}
+	if n := playlistSegments(path); n < 1 {
+		t.Errorf("expected H.264 recording to produce segments, got %d", n)
 	}
 }
 

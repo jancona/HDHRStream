@@ -88,11 +88,17 @@ streams are capped at the device's tuner count (returns 503 when all are busy).
 ### DVR recordings (optional)
 
 Set `-dvr`/`HDHR_DVR` to your RECORD engine's URL to add a **Recordings** view
-(Series → Episodes → play). Recordings are stored full-quality MPEG-2/AC-3, so
-the server transcodes them to H.264/AAC HLS on the fly with ffmpeg — heavier than
-live (which only remuxes), and concurrency is capped separately (2 by default).
-No tuner is used, so recording playback never conflicts with live TV or
-recordings. Transcoded segments are written to `-rec-workdir` (disk, not tmpfs).
+(Series → Episodes → play). The server probes each recording's codec: if the
+video is already H.264 (ATSC 3.0 / transcoded recordings) it just **remuxes** to
+HLS (cheap, real-time, like live) and re-encodes the AC-3 audio to AAC; only
+MPEG-2 recordings get a full, CPU-heavy video transcode. Concurrency is capped
+separately (2 by default). No tuner is used, so recording playback never
+conflicts with live TV or recordings. Segments are written to `-rec-workdir`
+(disk, not tmpfs).
+
+> Note: software transcoding MPEG-2 1080i in real time is too heavy for a
+> low-power box; for those recordings you'd want hardware (VA-API) — not yet
+> wired up. H.264 recordings are fine since they're only remuxed.
 
 ## Tests
 
