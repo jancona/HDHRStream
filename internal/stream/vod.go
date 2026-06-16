@@ -182,10 +182,9 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	args := []string{
 		"-hide_banner", "-loglevel", m.cfg.FFmpegLog, "-nostats",
 		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
-		// The DVR feeds recordings faster than real time, which makes the HLS
-		// playlist grow at >1x; players then chase a runaway "live edge" and
-		// freeze. Read at real time so it grows at playback speed, like live.
-		"-re",
+		// No -re: let it transcode ahead of the playhead (the DVR feeds faster
+		// than real time) so there's slack to pause, rewind and skip into. The
+		// client treats the growing playlist as a seekable VOD, not a live edge.
 		"-i", srcURL,
 	}
 	// If the recording's video is already H.264, just copy it — a cheap real-time
@@ -243,13 +242,10 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	go func() {
 		err := cmd.Wait()
 		log.Printf("[rec %s] transcode exited: %v", key, err)
+		// Don't delete on exit: when ffmpeg finishes it has produced the whole
+		// recording as a complete, seekable VOD that the viewer may still be
+		// watching. The idle reaper cleans it up after they stop.
 		close(s.done)
-		m.mu.Lock()
-		if m.sessions[key] == s {
-			os.RemoveAll(s.dir)
-			delete(m.sessions, key)
-		}
-		m.mu.Unlock()
 	}()
 	return s, nil
 }
@@ -272,12 +268,10 @@ func (m *VODManager) reapLoop() {
 	for range t.C {
 		m.mu.Lock()
 		for key, s := range m.sessions {
-			select {
-			case <-s.done:
-			default:
-				if s.idle() < m.cfg.IdleTimeout {
-					continue
-				}
+			// Reap on idle only — a finished transcode (s.done closed) stays
+			// available for seeking/replay until the viewer stops requesting it.
+			if s.idle() < m.cfg.IdleTimeout {
+				continue
 			}
 			log.Printf("[rec %s] reaping (idle %s)", key, s.idle().Round(time.Second))
 			s.cancel()
