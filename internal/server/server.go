@@ -296,9 +296,18 @@ func (s *srv) serveRecPlaylist(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, "could not start recording", http.StatusBadGateway)
 		return
 	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("reading recording playlist for %s: %v", id, err)
+		http.Error(w, "could not read recording", http.StatusBadGateway)
+		return
+	}
+	// Serve as a plain 200 (not http.ServeFile, which honors Range and returns
+	// 206 — a partial-content response on a playlist reload stops hls.js from
+	// picking up new segments).
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(w, r, path)
+	w.Write(data)
 }
 
 func (s *srv) handleStream(w http.ResponseWriter, r *http.Request) {
