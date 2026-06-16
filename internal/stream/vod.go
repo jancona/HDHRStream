@@ -102,7 +102,7 @@ func (m *VODManager) EnsurePlaylist(srcURL, id, profile string) (string, error) 
 
 	s.touch()
 
-	const readySegments = 2
+	const readySegments = 1 // a recording is VOD; one segment is enough to start
 	playlist := filepath.Join(s.dir, "index.m3u8")
 	deadline := time.Now().Add(m.cfg.StartupWait)
 	for {
@@ -160,6 +160,7 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	args := []string{
 		"-hide_banner", "-loglevel", m.cfg.FFmpegLog, "-nostats",
+		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
 		"-i", srcURL,
 		// Full transcode: recordings are MPEG-2 (often interlaced) + AC-3. Deinterlace,
 		// scale to the chosen height, encode H.264 + stereo AAC for browser HLS.

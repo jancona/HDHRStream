@@ -317,7 +317,9 @@ async function playStream(src, title, busyMsg, live) {
     return;
   }
   if (!resp.ok) {
-    failPlayback('Could not start playback. It may be unavailable or have no signal.');
+    failPlayback(live
+      ? 'Could not start this channel. It may be unavailable or have no signal.'
+      : 'Could not start this recording — the server may be transcoding too slowly for this quality. Try a lower quality.');
     return;
   }
 
