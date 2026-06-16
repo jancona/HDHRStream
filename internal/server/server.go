@@ -39,8 +39,18 @@ func New(cfg Config) http.Handler {
 	mux.HandleFunc("GET /api/channels", s.handleChannels)
 	mux.HandleFunc("GET /playlist.m3u", s.handlePlaylist)
 	mux.HandleFunc("GET /stream/{ch}/{file}", s.handleStream)
-	mux.Handle("GET /", http.FileServerFS(cfg.WebFS))
+	// no-cache so a new build's app.js/styles.css/index.html are picked up on the
+	// next load instead of a stale cached copy (the browser still revalidates and
+	// gets a 304 when nothing changed).
+	mux.Handle("GET /", noCacheStatic(http.FileServerFS(cfg.WebFS)))
 	return logRequests(mux, cfg.Debug)
+}
+
+func noCacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // logRequests logs each request's method, path, status, duration and client. In
