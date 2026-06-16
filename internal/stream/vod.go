@@ -184,9 +184,10 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
 		"-i", srcURL,
 	}
-	// If the recording's video is already H.264 (many ATSC 3.0 / transcoded
-	// recordings are), just copy it — a cheap real-time remux like the live path.
-	// Only MPEG-2 (etc.) needs a full, CPU-heavy transcode.
+	// If the recording's video is already H.264, just copy it — a cheap real-time
+	// remux like the live path. (The HDHomeRun DVR can be set to record the
+	// Extend's transcoded H.264 output instead of the original MPEG-2.) Only
+	// MPEG-2 (recorded at original quality) needs a full, CPU-heavy transcode.
 	if codec := probeVideoCodec(m.cfg.FFmpegPath, srcURL); codec == "h264" {
 		log.Printf("[rec %s] video is h264; copying (remux only)", key)
 		args = append(args, "-c:v", "copy")

@@ -89,8 +89,9 @@ streams are capped at the device's tuner count (returns 503 when all are busy).
 
 Set `-dvr`/`HDHR_DVR` to your RECORD engine's URL to add a **Recordings** view
 (Series → Episodes → play). The server probes each recording's codec: if the
-video is already H.264 (ATSC 3.0 / transcoded recordings) it just **remuxes** to
-HLS (cheap, real-time, like live) and re-encodes the AC-3 audio to AAC; only
+video is already H.264 — e.g. the DVR is set to record the Extend's transcoded
+output rather than the original MPEG-2 — it just **remuxes** to HLS (cheap,
+real-time, like live) and re-encodes the AC-3 audio to AAC; only original-quality
 MPEG-2 recordings get a full, CPU-heavy video transcode. Concurrency is capped
 separately (2 by default). No tuner is used, so recording playback never
 conflicts with live TV or recordings. Segments are written to `-rec-workdir`
