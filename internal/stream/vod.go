@@ -182,6 +182,10 @@ func (m *VODManager) start(srcURL, key, profile string) (*vodSession, error) {
 	args := []string{
 		"-hide_banner", "-loglevel", m.cfg.FFmpegLog, "-nostats",
 		"-rw_timeout", "15000000", // 15s with no data from the DVR -> fail instead of hanging
+		// The DVR feeds recordings faster than real time, which makes the HLS
+		// playlist grow at >1x; players then chase a runaway "live edge" and
+		// freeze. Read at real time so it grows at playback speed, like live.
+		"-re",
 		"-i", srcURL,
 	}
 	// If the recording's video is already H.264, just copy it — a cheap real-time
