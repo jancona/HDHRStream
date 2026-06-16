@@ -334,9 +334,15 @@ async function playStream(src, title, busyMsg, live) {
   }
 
   if (window.Hls && Hls.isSupported()) {
-    const cfg = {
+    // Note: recordings have a large media start PTS (broadcast-continuous), so
+    // startPosition:0 lands before any data and never plays — use the live-style
+    // config (start near the first available segment) for both.
+    hls = new Hls({
       lowLatencyMode: false,
+      liveSyncDurationCount: 4,       // sit ~4 segments behind live for cushion
+      liveMaxLatencyDurationCount: 15,
       maxBufferLength: 30,
+      backBufferLength: 30,
       fragLoadingMaxRetry: 6,
       levelLoadingMaxRetry: 6,
       manifestLoadingMaxRetry: 6,
@@ -348,19 +354,7 @@ async function playStream(src, title, busyMsg, live) {
       // instead of stalling.
       maxBufferHole: 0.5,
       nudgeMaxRetry: 10,
-    };
-    if (live) {
-      cfg.liveSyncDurationCount = 4;        // sit ~4 segments behind live for cushion
-      cfg.liveMaxLatencyDurationCount = 15;
-      cfg.backBufferLength = 30;
-    } else {
-      // A recording is a growing VOD that transcodes ahead of the playhead. Start
-      // at the beginning and DON'T chase the (fast-moving) edge, so pause builds
-      // slack and rewind/skip work within what's been transcoded.
-      cfg.startPosition = 0;
-      cfg.backBufferLength = 90;
-    }
-    hls = new Hls(cfg);
+    });
     if (DEBUG) window._hls = hls; // expose for console inspection
     hls.loadSource(src);
     hls.attachMedia(video);
